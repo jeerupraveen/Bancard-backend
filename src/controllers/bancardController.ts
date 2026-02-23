@@ -1,6 +1,9 @@
 
 import { Request, Response } from 'express';
+import axios from 'axios';
+import https from 'https';
 import cryptoJs from 'crypto-js';
+import { createHash } from "crypto";
 import Transaction, { ITransaction } from '../models/Transaction';
 import {
     VendorConfig,
@@ -15,7 +18,6 @@ import {
     pstatus,
     status,
     convertToHuman,
-    resilientFetch,
     istatus
 } from '../utils';
 
@@ -40,10 +42,14 @@ export const createTransaction = async (req: Request, res: Response) => {
         const message = messageGenerator(order.locale || 'en');
         const startTime = new Date();
 
+        // Generate shop_process_id before creating transaction
+        const shop_process_id = Math.floor(100 + Math.random() * 900) + String(Date.now()).slice(-6);
+
         // 1. Create initial transaction in DB
         const transaction = new Transaction({
+            shop_process_id: shop_process_id, // Store the ID used for Bancard
             presentment_currency: order.currency,
-            entity: order.eid,
+            entity: order.eid || 'default',   // Fallback when eid is not supplied (e.g. direct frontend)
             presentment_net_amount: order.amount,
             pg_id: config.id,
             status: pstatus.vpos_initiated,
@@ -68,13 +74,14 @@ export const createTransaction = async (req: Request, res: Response) => {
             });
         }
 
-        const shop_process_id = savedTransaction.id; // Mongoose virtual getter for _id string
         const amountString = Number(convertToHuman(order.amount, order.currency)).toFixed(2);
 
         // 2. Generate Token
         // Token: md5(private_key + shop_process_id + amount + currency)
         const tokenString = config.password + shop_process_id + amountString + order.currency;
-        const token = cryptoJs.MD5(tokenString).toString();
+        const token = createHash("md5").update(tokenString).digest("hex");
+        console.log("Shop Process ID", shop_process_id);
+        console.log("Token", token);
 
         const body = {
             public_key: config.username,
@@ -83,32 +90,36 @@ export const createTransaction = async (req: Request, res: Response) => {
                 shop_process_id: shop_process_id,
                 amount: amountString,
                 currency: order.currency,
-                description: order.description?.substring(0, 20) || "",
-                return_url: order.returnUrl,
-                cancel_url: order.returnUrl,
+                description: order.description?.substring(0, 20) || "TEST",
+                return_url: `${order.returnUrl}?shop_process_id=${shop_process_id}`,
+                cancel_url: `${order.returnUrl}?shop_process_id=${shop_process_id}`,
             },
         };
-
+        console.log("Config Test", config.test);
         const baseUrl = config.test ? "https://vpos.infonet.com.py:8888" : "https://vpos.infonet.com.py";
         const url = `${baseUrl}/vpos/api/0.3/single_buy`;
         console.log("URL", url);
+        console.log("Body", body);
         // 3. Call Bancard API
-        const { res: apiRes, err } = await resilientFetch(url, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(body),
-        });
-
-        if (!apiRes || !apiRes.ok) {
-            let errorMessage = err;
-            console.log("Error", err);
-            try {
-                if (apiRes) {
-                    const errJson = await apiRes.json();
-                    console.log("Error JSON", errJson);
-                    errorMessage = JSON.stringify(errJson);
-                }
-            } catch (e) { /* ignore */ }
+        let apiRes: any;
+        let err: any;
+        try {
+            const response = await axios({
+                url,
+                data: body,
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                httpsAgent: new https.Agent({ family: 4 }), // Force IPv4
+            });
+            apiRes = response;
+        } catch (error) {
+            err = error;
+        }
+        console.log("API Response", apiRes ? apiRes.status : "No Response");
+        console.log("Error", err ? err.message : "No Error");
+        if (err || !apiRes || apiRes.status !== 200) { // Axios throws on error, but we can double check status
+            let errorMessage = err ? (err.response?.data ? JSON.stringify(err.response.data) : err.message) : "Unknown Error";
+            console.log("Error Message", errorMessage);
 
             savedTransaction.status = pstatus.vpos_failed;
             transaction.failure_message = errorMessage;
@@ -119,7 +130,8 @@ export const createTransaction = async (req: Request, res: Response) => {
             });
         }
 
-        const responseJson: any = await apiRes.json();
+        const responseJson: any = apiRes.data;
+        console.log("Response JSON", responseJson);
         if (responseJson.status !== "success") {
             savedTransaction.status = pstatus.vpos_failed;
             await savedTransaction.save();
@@ -140,14 +152,18 @@ export const createTransaction = async (req: Request, res: Response) => {
         });
 
         const redirectUrl = `${baseUrl}/payment/single_buy?${redirectParams.toString()}`;
-
+        console.log("Redirect URL / Process ID", redirectUrl, process_id);
         return res.status(status.OK).json({
+            // Top-level process_id for easy access by the JS checkout library integration
+            process_id: process_id,
             data: {
                 response: { redirect_url: redirectUrl },
                 entity: savedTransaction.entity,
                 status: pstatus.vpos_processing,
+                process_id: process_id,
                 transaction: {
                     id: savedTransaction.id,
+                    shop_process_id: savedTransaction.shop_process_id,
                     currency: savedTransaction.presentment_currency,
                     description: savedTransaction.description,
                     metadata: savedTransaction.metadata,
@@ -207,8 +223,8 @@ export const updateTransaction = async (req: Request, res: Response) => {
             trxnStatus = pstatus.vpos_success;
         }
 
-        const updatedTransaction = await Transaction.findByIdAndUpdate(
-            shop_process_id,
+        const updatedTransaction = await Transaction.findOneAndUpdate(
+            { shop_process_id: shop_process_id },
             {
                 status: trxnStatus,
                 failure_message: response_code !== "00" ? response_description : null
@@ -260,12 +276,12 @@ export const refundTransaction = async (req: Request, res: Response) => {
         const config = getVendorConfig();
         const message = messageGenerator(config.locale);
 
-        const originalTransaction = await Transaction.findById(transactionId);
+        const originalTransaction = await Transaction.findOne({ shop_process_id: transactionId });
         if (!originalTransaction) {
             return res.status(status.NOT_FOUND).json({ error: "Transaction not found" });
         }
 
-        const shop_process_id = originalTransaction.id;
+        const shop_process_id = originalTransaction.shop_process_id;
 
         // Token: md5(private_key + shop_process_id + "rollback" + "0.00")
         // Refund seems to be a rollback of the full amount or specific amount? 
@@ -284,18 +300,26 @@ export const refundTransaction = async (req: Request, res: Response) => {
         const baseUrl = config.test ? "https://vpos.infonet.com.py:8888" : "https://vpos.infonet.com.py";
         const url = `${baseUrl}/vpos/api/0.3/single_buy/rollback`;
 
-        const { res: apiRes, err } = await resilientFetch(url, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(body),
-        });
+        let apiRes: any;
+        let err: any;
+        try {
+            apiRes = await axios({
+                url,
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                data: body,
+                httpsAgent: new https.Agent({ family: 4 }),
+                validateStatus: () => true
+            });
+        } catch (error) {
+            err = error;
+        }
 
-        if (!apiRes || !apiRes.ok) {
-            let errorMessage = err;
+        if (!apiRes || (apiRes.status < 200 || apiRes.status >= 300)) {
+            let errorMessage = err ? err.message : "Unknown Error";
             try {
-                if (apiRes) {
-                    const errJson = await apiRes.json();
-                    errorMessage = JSON.stringify(errJson);
+                if (apiRes && apiRes.data) {
+                    errorMessage = JSON.stringify(apiRes.data);
                 }
             } catch (e) { /* ignore */ }
 
@@ -304,7 +328,7 @@ export const refundTransaction = async (req: Request, res: Response) => {
             });
         }
 
-        const responseJson: any = await apiRes.json();
+        const responseJson: any = apiRes.data;
         if (responseJson.status !== "success") {
             return res.status(status.EXPECTATION_FAILED).json({
                 error: message("refund_order_creation_issue", JSON.stringify(responseJson)),
@@ -376,19 +400,18 @@ export const refundTransaction = async (req: Request, res: Response) => {
 export const getStatus = async (req: Request, res: Response) => {
     try {
         const { transactionId } = req.params;
+        console.log(transactionId);
         const config = getVendorConfig();
         const message = messageGenerator(config.locale);
 
-        const trxnData = await Transaction.findById(transactionId);
+        const trxnData = await Transaction.findOne({ shop_process_id: transactionId });
 
-        if (!trxnData) {
-            return res.status(status.NOT_FOUND).json({ error: 'Transaction not found' });
-        }
-
-        const shop_process_id = trxnData.id;
+        const shop_process_id = transactionId;
+        console.log("shop_process_id", shop_process_id);
+        console.log("config.password", config.password);
         // Token: md5(private_key + shop_process_id + "get_confirmation")
         const tokenString = config.password + shop_process_id + "get_confirmation";
-        const token = cryptoJs.MD5(tokenString).toString();
+        const token = createHash("md5").update(tokenString).digest("hex");
 
         const body = {
             public_key: config.username,
@@ -397,26 +420,45 @@ export const getStatus = async (req: Request, res: Response) => {
                 shop_process_id: shop_process_id,
             },
         };
-
+        console.log("body", body);
         const baseUrl = config.test
             ? "https://vpos.infonet.com.py:8888"
             : "https://vpos.infonet.com.py";
         const url = `${baseUrl}/vpos/api/0.3/single_buy/confirmations`;
+        console.log("url", url);
 
-        const { res: apiRes, err } = await resilientFetch(url, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(body),
-        });
+        let apiRes: any;
+        let err: any;
+        try {
+            apiRes = await axios({
+                url,
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                data: body,
+                httpsAgent: new https.Agent({ family: 4 }),
+                validateStatus: () => true
+            });
+        } catch (error) {
+            err = error;
+        }
 
-        if (!apiRes || !apiRes.ok) {
+        if (!apiRes) {
+            console.log("API Response Error", err);
             return res.status(status.SERVICE_UNAVAILABLE).json({
-                error: message("transaction_status_issue", err),
+                error: message("transaction_status_issue", err ? err.message : "Network Error"),
             });
         }
 
-        const responseJson: any = await apiRes.json();
+        const responseJson: any = apiRes.data;
 
+        if ((apiRes.status < 200 || apiRes.status >= 300) && responseJson?.status !== "error") {
+            console.log("API Response", apiRes.status);
+            console.log("Response JSON", responseJson);
+            return res.status(status.SERVICE_UNAVAILABLE).json({
+                error: message("transaction_status_issue", `API returned ${apiRes.status}`),
+            });
+        }
+        console.log("Response JSON", responseJson);
         let newStatus = pstatus.vpos_processing;
         let failureMessage = "";
 
@@ -441,7 +483,7 @@ export const getStatus = async (req: Request, res: Response) => {
         }
 
         // Update DB
-        if (newStatus !== trxnData.status) {
+        if (trxnData && newStatus !== trxnData.status) {
             trxnData.status = newStatus;
             trxnData.failure_message = failureMessage;
             await trxnData.save();
@@ -450,23 +492,23 @@ export const getStatus = async (req: Request, res: Response) => {
         return res.status(status.OK).json({
             data: {
                 response: responseJson,
-                entity: trxnData.entity,
-                status: trxnData.status,
+                entity: trxnData?.entity,
+                status: trxnData?.status,
                 transaction: {
-                    id: trxnData.id,
-                    currency: trxnData.presentment_currency,
-                    description: trxnData.description,
-                    metadata: trxnData.metadata,
-                    payment_id: trxnData.payment_id,
+                    id: trxnData?.id,
+                    currency: trxnData?.presentment_currency,
+                    description: trxnData?.description,
+                    metadata: trxnData?.metadata,
+                    payment_id: trxnData?.payment_id,
                     total_amount: convertToHuman(
-                        trxnData.presentment_total_amount,
-                        trxnData.presentment_currency as CurrencyCode
+                        trxnData?.presentment_total_amount ?? 0,
+                        trxnData?.presentment_currency as CurrencyCode
                     ),
-                    transaction_date: trxnData.transaction_date,
-                    status: istatus.get(trxnData.status) || "non-existent-status",
-                    visible_id: trxnData.visible_id,
+                    transaction_date: trxnData?.transaction_date,
+                    status: istatus.get(trxnData?.status ?? "") || "non-existent-status",
+                    visible_id: trxnData?.visible_id,
                     vendor: "bancard",
-                    method: trxnData.method || "Online",
+                    method: trxnData?.method || "Online",
                     type: "sale",
                 },
             },

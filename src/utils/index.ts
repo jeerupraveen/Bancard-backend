@@ -50,30 +50,3 @@ export const messageGenerator = (locale: string) => {
     };
 };
 
-import axios from 'axios';
-
-export const resilientFetch = async (url: string, options: any) => {
-    try {
-        const response = await axios({
-            url,
-            method: options.method,
-            headers: options.headers,
-            data: options.body ? JSON.parse(options.body) : undefined,
-            validateStatus: () => true, // resolve promise for all status codes
-        });
-        console.log("Response", response.data);
-        return {
-            res: {
-                ok: response.status >= 200 && response.status < 300,
-                status: response.status,
-                json: async () => response.data,
-            },
-            err: null
-        };
-    } catch (error: any) {
-        return {
-            res: null,
-            err: error.message
-        };
-    }
-};

@@ -2,7 +2,7 @@ import mongoose, { Schema, Document } from 'mongoose';
 
 export interface ITransaction extends Document {
     presentment_currency: string;
-    entity: string;
+    entity?: string;
     presentment_net_amount: number;
     pg_id: string;
     status: string;
@@ -22,11 +22,12 @@ export interface ITransaction extends Document {
     is_refund?: boolean;
     links_to?: string;
     pg_user?: string;
+    shop_process_id?: string;
 }
 
 const TransactionSchema: Schema = new Schema({
     presentment_currency: { type: String, required: true },
-    entity: { type: String, required: true },
+    entity: { type: String, required: false, default: 'default' },
     presentment_net_amount: { type: Number, required: true },
     pg_id: { type: String, required: true },
     status: { type: String, required: true },
@@ -46,6 +47,7 @@ const TransactionSchema: Schema = new Schema({
     is_refund: { type: Boolean, default: false },
     links_to: { type: String }, // ID of the original transaction
     pg_user: { type: String },
+    shop_process_id: { type: String, unique: true, sparse: true }, // Add shop_process_id
 }, { timestamps: true });
 
 // Add a virtual 'id' property that maps to '_id' to match Supabase behavior
