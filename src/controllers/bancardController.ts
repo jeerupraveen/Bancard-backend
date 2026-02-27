@@ -89,8 +89,8 @@ export const createTransaction = async (req: Request, res: Response) => {
                 token: token,
                 shop_process_id: shop_process_id,
                 amount: amountString,
-                currency: order.currency,
-                description: order.description?.substring(0, 20) || "TEST",
+                currency: order.currency.toUpperCase(),
+                description: order.description?.substring(0, 20) ,
                 return_url: `${order.returnUrl}?shop_process_id=${shop_process_id}`,
                 cancel_url: `${order.returnUrl}?shop_process_id=${shop_process_id}`,
             },
@@ -436,7 +436,6 @@ export const getStatus = async (req: Request, res: Response) => {
                 headers: { "Content-Type": "application/json" },
                 data: body,
                 httpsAgent: new https.Agent({ family: 4 }),
-                validateStatus: () => true
             });
         } catch (error) {
             err = error;

@@ -17,6 +17,18 @@
 
 <body>
   <div id="root"></div>
+  <script>
+    // Load Bancard Checkout based on environment
+    const env = import.meta.env.MODE ;
+    console.log(`Loading Bancard Checkout for environment: ${env}`);
+    const scriptUrl = env === 'production' 
+      ? 'https://vpos.infonet.com.py:8888/checkout/javascript/dist/bancard-checkout-3.0.0.js'
+      : 'https://vpos.infonet.com.py/checkout/javascript/dist/bancard-checkout-3.0.0.js';
+    
+    const script = document.createElement('script');
+    script.src = scriptUrl;
+    document.head.appendChild(script);
+  </script>
   <script type="module" src="/src/main.tsx"></script>
 </body>
 

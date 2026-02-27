@@ -79,7 +79,7 @@ export default function App() {
     useEffect(() => {
         return () => {
             if (window.Bancard) {
-                try { window.Bancard.Checkout.clean(); } catch (_) { /* ignore */ }
+                try { window.Bancard.Checkout.clean(); } catch (_) { /* ignore */ } //NOSONAR
             }
             iframeInitialised.current = false;
         };
