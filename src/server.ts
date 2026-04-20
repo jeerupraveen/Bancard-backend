@@ -1,9 +1,10 @@
 import app from './app';
 import dotenv from 'dotenv';
+import { logger } from './utils/logger';
 dotenv.config();
 
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
-    console.log(`Server is running strictly on port ${PORT}`);
+    logger.info('Server started', { port: PORT });
 });

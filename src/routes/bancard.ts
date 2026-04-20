@@ -5,8 +5,10 @@ import {
     refundTransaction,
     getStatus
 } from '../controllers/bancardController';
+import { createLogger } from '../utils/logger';
 
 const router = express.Router();
+const logger = createLogger('bancard-route', 'bancard.log');
 
 // Create a new transaction (Single Buy)
 router.post('/create', createTransaction);
@@ -23,17 +25,10 @@ router.get('/status/:transactionId', getStatus);
 // ── Webhook inspector ──────────────────────────────────────────────────────────
 // Receives raw Bancard PG notifications, logs headers + body, responds OK.
 router.post('/webhook', (req: Request, res: Response) => {
-    console.log('\n══════════════════════════════════════════════════');
-    console.log('📥  BANCARD WEBHOOK RECEIVED');
-    console.log('══════════════════════════════════════════════════');
-
-    console.log('\n── HEADERS ──────────────────────────────────────────');
-    console.log(JSON.stringify(req.headers, null, 2));
-
-    console.log('\n── BODY ─────────────────────────────────────────────');
-    console.log(JSON.stringify(req.body, null, 2));
-
-    console.log('\n══════════════════════════════════════════════════\n');
+    logger.info('Webhook received', {
+        headers: req.headers,
+        body: req.body,
+    });
 
     res.status(200).json({ status: 'ok' });
 });

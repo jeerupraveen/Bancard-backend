@@ -3,6 +3,7 @@ import cors from 'cors';
 import bodyParser from 'body-parser';
 import bancardRoutes from './routes/bancard';
 import connectDB from './config/db';
+import { logger, requestLogger } from './utils/logger';
 
 const app: Express = express();
 
@@ -13,14 +14,17 @@ connectDB();
 app.use(cors());
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
+app.use(requestLogger);
 
 // Routes
 app.use('/api/bancard', bancardRoutes);
 
 app.get('/callback', (req: Request, res: Response) => {
     const { status, description } = req.query;
-    console.log("Request Body", req.body);
-    console.log('Callback received:', req.query);
+    logger.info("Callback received", {
+        query: req.query,
+        body: req.body,
+    });
 
     res.send(`
         <html>
